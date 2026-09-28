@@ -13,8 +13,9 @@
 > trains with only two loss terms, thanks to SIGReg from LeJEPA. This repository rebuilds it from
 > the paper as one readable PyTorch file, then proves the rebuild is exact: loaded with the
 > authors' released weights it produces the same numbers as their model, checked by CI on every
-> push. The next steps run it inside the authors' own planning evaluation and retrain it from
-> scratch on the free GPUs Kaggle gives every account.
+> push. Run inside the authors' own planning evaluation on a free Kaggle T4, it reaches the same 86%
+> success as their model, on exactly the same episodes. Retraining from scratch on the same free GPUs
+> is under way.
 
 **Reading guide:** [status](#status) is the evidence so far; [how it works](#how-it-works) is the
 model in one screen; [verify it yourself](#verify-it-yourself) takes two commands.
@@ -26,8 +27,18 @@ model in one screen; [verify it yourself](#verify-it-yourself) takes two command
 | Architecture from the paper | [`lewm_t4/model.py`](lewm_t4/model.py): ViT-tiny encoder, BatchNorm projectors, action embedder, 6-layer AdaLN-zero causal predictor, SIGReg; 18,034,478 parameters, the official count | done |
 | Load the official TwoRoom checkpoint | [`lewm_t4/convert.py`](lewm_t4/convert.py) maps it onto this code; mapping back is exact | done |
 | Numerical parity on CPU | same inputs through both models: encoder **bit-exact** (max difference 0.0), action encoder 6e-7, predictor 8.6e-7, planning cost 1.2e-7 relative; [CI](.github/workflows/ci.yml) re-checks it on every push against the checkpoint downloaded fresh | done |
-| Parity inside the official planning loop, on a T4 | [`kaggle/verify`](kaggle/verify): the authors' 50-episode TwoRoom protocol, their CEM solver, run once with their model and once with this one | running |
-| Retrain from scratch on a T4 (two seeds, fp16) and compare planning success | [`kaggle/train`](kaggle/train) | next |
+| Parity on a GPU | Kaggle T4, fp32: encoder bit-exact again, predictor within 4.8e-7 | done |
+| Parity inside the official planning loop | the authors' 50-episode TwoRoom protocol and CEM solver, run once with their model and once with this one: **86% success for both, with identical outcomes on every one of the 50 episodes** ([`reports/kaggle-verify.json`](reports/kaggle-verify.json)) | done |
+| Retrain from scratch on a T4 (two seeds, fp16) and plan with it | [`kaggle/train`](kaggle/train): 9-hour budget, one seed per GPU on shared batches | running |
+
+## The task
+
+![TwoRoom frames](reports/tworoom_frames.png)
+
+TwoRoom: a dot must reach a goal position in another room, through a door, from 224 x 224 pixels.
+The dataset has 10,000 episodes and 920,809 frames. The model sees the current frame and a goal
+frame and plans five 5-frame action chunks ahead; an episode succeeds if the agent reaches the goal
+within 50 steps.
 
 ## How it works
 
