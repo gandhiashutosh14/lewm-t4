@@ -62,13 +62,14 @@ import zstandard  # noqa: E402
 
 with open(f"{W}/tworoom.tar.zst", "rb") as fh, zstandard.ZstdDecompressor().stream_reader(fh) as reader:
     with tarfile.open(fileobj=reader, mode="r|") as tar:
-        tar.extractall(f"{W}/data")
+        tar.extractall(f"{W}/data", filter="data")
 os.remove(f"{W}/tworoom.tar.zst")
 h5_files = sorted(glob.glob(f"{W}/data/**/*.h5", recursive=True))
 stamp(f"dataset files: {h5_files}")
 H5 = h5_files[0]
 
 import h5py  # noqa: E402
+import hdf5plugin  # noqa: E402,F401  (the pixels use an HDF5 compression filter)
 import numpy as np  # noqa: E402
 
 with h5py.File(H5, "r") as f:
