@@ -6,9 +6,10 @@ train/validation split with seed 3072.
 Differences, all forced by a free Kaggle T4 (16 GB, 12-hour sessions):
   * fp16 autocast with a gradient scaler instead of bf16 (T4 has no bf16 tensor cores); SIGReg is
     computed in fp32 either way;
-  * a wall-clock budget: training stops cleanly before the session limit, and the learning-rate
-    schedule is laid out over the epochs that fit, measured on the first epoch;
-  * a checkpoint after every epoch, so a killed session loses at most one epoch.
+  * a wall-clock budget: the first few hundred steps are timed and the warm-up + cosine schedule is
+    laid out over the number of steps that fit the session, so training ends cleanly on schedule;
+  * a validation pass and a checkpoint every 2,500 steps;
+  * a T4 x2 session trains two seeds at once, one per GPU, on the same batches (loaded once).
 """
 from __future__ import annotations
 
@@ -98,75 +99,98 @@ def lr_at(step: int, total: int, warmup: int, base: float) -> float:
     return base * 0.5 * (1 + math.cos(math.pi * min(1.0, (step - warmup) / max(1, total - warmup))))
 
 
-def train(cfg: TrainConfig, log=print) -> Dict:
-    torch.manual_seed(cfg.seed)
-    device = "cuda"
+class Replica:
+    """One model, its optimiser and its gradient scaler on one GPU."""
+
+    def __init__(self, seed: int, device: str, cfg: TrainConfig):
+        torch.manual_seed(seed)
+        self.seed, self.device = seed, device
+        self.model = init_like_reference(LeWM(LeWMConfig(image_size=cfg.img_size))).to(device)
+        self.opt = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+        self.gen = torch.Generator(device=device)
+        self.last = None
+
+    def step(self, batch, step: int, lr: float, cfg: TrainConfig) -> None:
+        px = prepare_pixels(batch["pixels"].to(self.device, non_blocking=True), cfg.img_size)
+        act = batch["action"].to(self.device, non_blocking=True)
+        for g in self.opt.param_groups:
+            g["lr"] = lr
+        self.gen.manual_seed(self.seed * 1_000_003 + step)
+        self.model.train()
+        with torch.autocast("cuda", dtype=torch.float16, enabled=cfg.amp):
+            loss, parts = self.model.loss(px, act, generator=self.gen)
+        self.opt.zero_grad(set_to_none=True)
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.opt)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.clip)
+        self.scaler.step(self.opt)
+        self.scaler.update()
+        self.last = (loss.detach(), parts)             # no host sync here; read when logging
+
+
+def train(cfg: TrainConfig, log=print, seeds: Optional[list] = None, devices: Optional[list] = None,
+          timing_steps: int = 300, eval_every: int = 2500) -> Dict:
+    """Train one model per (seed, device) on the same stream of batches (data is loaded once).
+
+    The schedule is fitted to the time budget by steps: the first ``timing_steps`` steps are timed,
+    the total number of steps that fits ``budget_hours`` is fixed from that, and warm-up plus cosine
+    decay are laid out over it. ``max_steps`` overrides the budget (benchmarks, smoke runs)."""
+    seeds = seeds or [cfg.seed]
+    devices = devices or [f"cuda:{i}" for i in range(len(seeds))]
     out = Path(cfg.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     train_dl, val_dl, n = make_loaders(cfg)
-    model = init_like_reference(LeWM(LeWMConfig(image_size=cfg.img_size))).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+    reps = [Replica(sd, dev, cfg) for sd, dev in zip(seeds, devices)]
     steps_per_epoch = len(train_dl)
-    total_steps = cfg.max_steps or steps_per_epoch * cfg.max_epochs
-    warmup = max(1, int(cfg.warmup_frac * total_steps))
-    history, step, t_start = [], 0, time.time()
-    gen = torch.Generator(device=device)
-    log(f"windows {n}, steps/epoch {steps_per_epoch}, planned steps {total_steps}")
-    for epoch in range(cfg.max_epochs):
-        model.train()
-        t_epoch, sums = time.time(), {"loss": 0.0, "pred": 0.0, "sigreg": 0.0}
-        for i, batch in enumerate(train_dl):
-            px = prepare_pixels(batch["pixels"].to(device, non_blocking=True), cfg.img_size)
-            act = batch["action"].to(device, non_blocking=True)
-            for g in opt.param_groups:
-                g["lr"] = lr_at(step, total_steps, warmup, cfg.lr)
-            gen.manual_seed(cfg.seed * 1_000_003 + step)
-            with torch.autocast("cuda", dtype=torch.float16, enabled=cfg.amp):
-                loss, parts = model.loss(px, act, generator=gen)
-            opt.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip)
-            scaler.step(opt)
-            scaler.update()
+    total = cfg.max_steps or steps_per_epoch * cfg.max_epochs
+    warmup = max(1, int(cfg.warmup_frac * total))
+    history = {r.seed: [] for r in reps}
+    step, t_start, t_budget0 = 0, time.time(), None
+    log(f"windows {n}, steps/epoch {steps_per_epoch}, models {len(reps)} on {devices}")
+    done = False
+    while not done:
+        for batch in train_dl:
+            lr = lr_at(step, total, warmup, cfg.lr)
+            for r in reps:
+                r.step(batch, step, lr, cfg)
             step += 1
-            sums["loss"] += float(loss.detach())
-            sums["pred"] += float(parts["pred"])
-            sums["sigreg"] += float(parts["sigreg"])
+            if step == 20:
+                t_budget0 = time.time()                     # exclude start-up from the timing
+            if step == timing_steps and not cfg.max_steps:
+                sec = (time.time() - t_budget0) / (timing_steps - 20)
+                remaining = cfg.budget_hours * 3600 - (time.time() - t_start)
+                total = step + int(remaining / (sec * 1.04))  # 4% for validation and checkpoints
+                warmup = max(1, int(cfg.warmup_frac * total))
+                log(f"timing: {sec:.3f} s/step -> {total} steps ({total / steps_per_epoch:.2f} epochs) fit in {cfg.budget_hours} h")
             if step % 100 == 0:
-                log(f"step {step} loss {float(loss):.4f} pred {float(parts['pred']):.4f} sigreg {float(parts['sigreg']):.3f} "
-                    f"lr {opt.param_groups[0]['lr']:.2e} {(time.time() - t_start) / step:.3f}s/step")
-            if cfg.max_steps and step >= cfg.max_steps:
+                msg = " | ".join(f"s{r.seed} loss {float(r.last[0]):.4f} pred {float(r.last[1]['pred']):.4f} "
+                                 f"sigreg {float(r.last[1]['sigreg']):.3f}" for r in reps)
+                log(f"step {step}/{total} lr {lr:.2e} {(time.time() - t_start) / step:.3f}s/step | {msg}")
+            if step % eval_every == 0 or step >= total:
+                for r in reps:
+                    rec = {"step": step, "epoch": step / steps_per_epoch, "hours": (time.time() - t_start) / 3600,
+                           "train_loss": float(r.last[0]), **validate(r.model, val_dl, cfg, device=r.device)}
+                    history[r.seed].append(rec)
+                    log(f"s{r.seed} {json.dumps(rec)}")
+                    save(r.model, out / f"s{r.seed}", cfg, history[r.seed], name="last")
+            if step >= total:
+                done = True
                 break
-        k = i + 1
-        rec = {"epoch": epoch + 1, "step": step, **{f"train_{a}": b / k for a, b in sums.items()},
-               **validate(model, val_dl, cfg), "epoch_minutes": (time.time() - t_epoch) / 60}
-        history.append(rec)
-        log(json.dumps(rec))
-        save(model, out, cfg, history, name="last")
-        if epoch == 0 and not cfg.max_steps:          # fit the schedule to the time budget
-            fit = int((cfg.budget_hours * 60 - rec["epoch_minutes"] * 1.5) // rec["epoch_minutes"]) + 1
-            epochs = max(1, min(cfg.max_epochs, fit))
-            total_steps = steps_per_epoch * epochs
-            warmup = min(warmup, max(1, int(cfg.warmup_frac * total_steps)))
-            cfg.max_epochs = epochs
-            log(f"time budget: {epochs} epochs fit in {cfg.budget_hours} h")
-        if (cfg.max_steps and step >= cfg.max_steps) or epoch + 1 >= cfg.max_epochs:
-            break
-    return {"history": history, "hours": (time.time() - t_start) / 3600, "steps": step, "config": asdict(cfg)}
+    return {"history": history, "hours": (time.time() - t_start) / 3600, "steps": step, "total_steps": total,
+            "steps_per_epoch": steps_per_epoch, "config": asdict(cfg), "seeds": seeds}
 
 
 @torch.no_grad()
-def validate(model: LeWM, dl, cfg: TrainConfig, max_batches: int = 50) -> Dict:
+def validate(model: LeWM, dl, cfg: TrainConfig, max_batches: int = 50, device: str = "cuda") -> Dict:
     model.eval()
     tot, n = {"pred": 0.0, "sigreg": 0.0}, 0
     for i, batch in enumerate(dl):
         if i >= max_batches:
             break
-        px = prepare_pixels(batch["pixels"].cuda(non_blocking=True), cfg.img_size)
+        px = prepare_pixels(batch["pixels"].to(device, non_blocking=True), cfg.img_size)
         with torch.autocast("cuda", dtype=torch.float16, enabled=cfg.amp):
-            _, parts = model.loss(px, batch["action"].cuda(non_blocking=True))
+            _, parts = model.loss(px, batch["action"].to(device, non_blocking=True))
         tot["pred"] += float(parts["pred"])
         tot["sigreg"] += float(parts["sigreg"])
         n += 1
@@ -174,6 +198,7 @@ def validate(model: LeWM, dl, cfg: TrainConfig, max_batches: int = 50) -> Dict:
 
 
 def save(model: LeWM, out: Path, cfg: TrainConfig, history, name: str) -> None:
+    out.mkdir(parents=True, exist_ok=True)
     sd = {k: v.detach().cpu() for k, v in model.state_dict().items()}
     torch.save(sd, out / f"{name}.pt")
     torch.save(to_official(sd), out / f"{name}_official_layout.pt")

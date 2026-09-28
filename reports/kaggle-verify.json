@@ -1,0 +1,295 @@
+{
+  "repo_sha": "e7d9556427f879229e6b52956527a7ea2e0db955",
+  "gpus": [
+    "Tesla T4",
+    "Tesla T4"
+  ],
+  "torch": "2.10.0+cu128",
+  "dataset": {
+    "file": "tworoom.h5",
+    "bytes": 12775849984,
+    "layout": {
+      "action": {
+        "shape": [
+          920809,
+          2
+        ],
+        "dtype": "float32"
+      },
+      "distance_to_target": {
+        "shape": [
+          920809
+        ],
+        "dtype": "float64"
+      },
+      "ep_idx": {
+        "shape": [
+          920809
+        ],
+        "dtype": "int32"
+      },
+      "ep_len": {
+        "shape": [
+          10000
+        ],
+        "dtype": "int32"
+      },
+      "ep_offset": {
+        "shape": [
+          10000
+        ],
+        "dtype": "int64"
+      },
+      "id": {
+        "shape": [
+          920809
+        ],
+        "dtype": "int64"
+      },
+      "observation": {
+        "shape": [
+          920809,
+          10
+        ],
+        "dtype": "float64"
+      },
+      "pixels": {
+        "shape": [
+          920809,
+          224,
+          224,
+          3
+        ],
+        "dtype": "uint8"
+      },
+      "pos_agent": {
+        "shape": [
+          920809,
+          2
+        ],
+        "dtype": "float32"
+      },
+      "pos_target": {
+        "shape": [
+          920809,
+          2
+        ],
+        "dtype": "float32"
+      },
+      "proprio": {
+        "shape": [
+          920809,
+          2
+        ],
+        "dtype": "float32"
+      },
+      "render_time": {
+        "shape": [
+          920809
+        ],
+        "dtype": "float64"
+      },
+      "reward": {
+        "shape": [
+          920809
+        ],
+        "dtype": "float64"
+      },
+      "step_idx": {
+        "shape": [
+          920809
+        ],
+        "dtype": "int64"
+      },
+      "terminated": {
+        "shape": [
+          920809
+        ],
+        "dtype": "bool"
+      },
+      "truncated": {
+        "shape": [
+          920809
+        ],
+        "dtype": "bool"
+      }
+    },
+    "episodes": 10000,
+    "frames": 920809,
+    "episode_length": {
+      "min": 31,
+      "median": 101.0,
+      "max": 101
+    }
+  },
+  "parity_gpu_fp32": {
+    "encode_max_abs": 0.0,
+    "predict_max_abs": 4.76837158203125e-07,
+    "embedding_mean_abs": 2.280802011489868
+  },
+  "plan_official": {
+    "success_rate": 86.0,
+    "episode_successes": [
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "seeds": null,
+    "seconds": 126.6,
+    "protocol": {
+      "num_eval": 50,
+      "goal_offset_steps": 25,
+      "eval_budget": 50,
+      "img_size": 224,
+      "seed": 42,
+      "horizon": 5,
+      "receding_horizon": 5,
+      "action_block": 5,
+      "cem": {
+        "num_samples": 300,
+        "var_scale": 1.0,
+        "n_steps": 30,
+        "topk": 30
+      }
+    }
+  },
+  "plan_reimplementation": {
+    "success_rate": 86.0,
+    "episode_successes": [
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "seeds": null,
+    "seconds": 130.1,
+    "protocol": {
+      "num_eval": 50,
+      "goal_offset_steps": 25,
+      "eval_budget": 50,
+      "img_size": 224,
+      "seed": 42,
+      "horizon": 5,
+      "receding_horizon": 5,
+      "action_block": 5,
+      "cem": {
+        "num_samples": 300,
+        "var_scale": 1.0,
+        "n_steps": 30,
+        "topk": 30
+      }
+    }
+  },
+  "train_benchmark": {
+    "steps": 200,
+    "hours": 0.05708441370063358,
+    "sec_per_step": 1.0275194466114044,
+    "history": [
+      {
+        "epoch": 1,
+        "step": 200,
+        "train_loss": 1.6188774156570434,
+        "train_pred": 0.6176591610908508,
+        "train_sigreg": 11.12486328125,
+        "val_pred": 0.7683215665817261,
+        "val_sigreg": 25.6625,
+        "epoch_minutes": 3.415104699134827
+      }
+    ],
+    "gpu_mem_gb": 12.187902976
+  },
+  "total_minutes": 10.983263464768728
+}
