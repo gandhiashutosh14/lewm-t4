@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lewm-t4"
+version = "0.1.0a1"
+description = "LeWorldModel (JEPA world model with SIGReg) reimplemented from the paper in plain PyTorch, proven equal to the official model on its own weights, and retrained on a free Kaggle T4."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{ name = "Ashutosh Gandhi", email = "gandhiashutosh14@gmail.com" }]
+keywords = ["jepa", "lejepa", "leworldmodel", "world-models", "sigreg", "reproduction", "model-predictive-control", "vision-transformer"]
+dependencies = ["torch>=2.2", "numpy>=1.24"]
+
+[project.optional-dependencies]
+# the official model's parts, for parity checks and the official planning harness
+reference = ["stable-worldmodel==0.1.1", "transformers>=4.40,<5", "h5py", "hdf5plugin", "opencv-python-headless",
+             "imageio[ffmpeg]", "scikit-learn", "pygame", "pymunk", "shapely"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/gandhiashutosh14/lewm-t4"
+
+[tool.setuptools.packages.find]
+include = ["lewm_t4*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning", "ignore::FutureWarning"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"kaggle/*" = ["E402"]

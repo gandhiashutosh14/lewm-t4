@@ -1,0 +1,32 @@
+name: parity
+
+# On every push: the model is rebuilt from this repository's code, the official LeWorldModel TwoRoom
+# checkpoint is downloaded from Hugging Face, and the tests check that both give the same encodings,
+# predictions and planning costs on the same inputs. CPU only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CUDA_VISIBLE_DEVICES: ""
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e ".[reference,dev]"
+      - run: ruff check lewm_t4 tests kaggle
+      - name: Parity with the official checkpoint
+        run: python -m pytest -q -rs
