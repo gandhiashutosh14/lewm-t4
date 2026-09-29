@@ -5,14 +5,13 @@ autoregressive transformer predictor with AdaLN-zero conditioning on actions, a 
 the predictor's output, and the two-term loss (next-embedding MSE + 0.09 * SIGReg).
 
 Module names are this project's own. ``convert.py`` maps the official checkpoint onto them, and
-``tests/test_parity.py`` checks that the two produce the same numbers on the same inputs.
+``tests/test_model.py`` checks that the two produce the same numbers on the same inputs.
 
 Shapes: pixels (B, T, 3, H, W) normalised with ImageNet statistics; actions (B, T, frameskip *
 action_dim); embeddings (B, T, 192).
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -185,17 +184,19 @@ class Predictor(nn.Module):
 def sigreg(z: torch.Tensor, slices: int = 1024, t_max: float = 3.0, knots: int = 17,
            generator: Optional[torch.Generator] = None) -> torch.Tensor:
     """Sliced Epps-Pulley distance of each time step's batch of embeddings from N(0, I), averaged.
-    z: (T, N, D). Integral over [-t_max, t_max] with window exp(-t^2/2), as in LeJEPA."""
-    a = torch.randn(z.shape[-1], slices, device=z.device, dtype=torch.float32, generator=generator)
-    a = a / a.norm(dim=0, keepdim=True)
-    t = torch.linspace(0.0, t_max, knots, device=z.device)
-    dt = t_max / (knots - 1)
-    w = torch.full((knots,), 2 * dt, device=z.device)
-    w[0] = w[-1] = dt
-    phi = torch.exp(-0.5 * t ** 2)
-    xt = (z.float() @ a).unsqueeze(-1) * t                           # (T, N, M, K)
-    err = (xt.cos().mean(-3) - phi) ** 2 + xt.sin().mean(-3) ** 2     # (T, M, K)
-    return (err @ (w * phi) * z.shape[-2]).mean()
+    z: (T, N, D). Integral over [-t_max, t_max] with window exp(-t^2/2), as in LeJEPA. Computed in fp32
+    with autocast off, so the projections and the quadrature stay fp32 under mixed-precision training."""
+    with torch.autocast(z.device.type, enabled=False):
+        a = torch.randn(z.shape[-1], slices, device=z.device, dtype=torch.float32, generator=generator)
+        a = a / a.norm(dim=0, keepdim=True)
+        t = torch.linspace(0.0, t_max, knots, device=z.device)
+        dt = t_max / (knots - 1)
+        w = torch.full((knots,), 2 * dt, device=z.device)
+        w[0] = w[-1] = dt
+        phi = torch.exp(-0.5 * t ** 2)
+        xt = (z.float() @ a).unsqueeze(-1) * t                           # (T, N, M, K)
+        err = (xt.cos().mean(-3) - phi) ** 2 + xt.sin().mean(-3) ** 2     # (T, M, K)
+        return (err @ (w * phi) * z.shape[-2]).mean()
 
 
 # --------------------------------------------------------------------------------------- world model
@@ -253,13 +254,20 @@ def count_params(m: nn.Module) -> int:
 
 
 def init_like_reference(m: LeWM) -> LeWM:
-    """Weight init for training from scratch: truncated normal (std 0.02) for linear layers, zero
-    biases, AdaLN gates at zero (set in AdaLNBlock), as is standard for ViTs and DiT-style blocks."""
-    for mod in m.modules():
-        if isinstance(mod, nn.Linear) and not any(mod is b.ada for b in m.predictor.blocks):
+    """Weight init for training from scratch, as the reference model is built: Hugging Face's ViT init
+    inside the encoder (truncated normal, std 0.02, for every linear weight, the patch embedding, the
+    CLS token and the position embeddings; zero biases; LayerNorm weight 1, bias 0) and PyTorch's
+    default init everywhere else. ``LeWM()`` already builds the projectors, the action embedder, the
+    predictor (AdaLN gates at zero, set in AdaLNBlock) and pred_proj that way, so only the encoder is
+    touched."""
+    for mod in m.encoder.modules():
+        if isinstance(mod, (nn.Linear, nn.Conv2d)):
             nn.init.trunc_normal_(mod.weight, std=0.02)
             if mod.bias is not None:
                 nn.init.zeros_(mod.bias)
-    fan_in = m.encoder.patch.in_channels * m.cfg.patch_size ** 2
-    nn.init.trunc_normal_(m.encoder.patch.weight, std=math.sqrt(1.0 / fan_in))
+        elif isinstance(mod, nn.LayerNorm):
+            nn.init.ones_(mod.weight)
+            nn.init.zeros_(mod.bias)
+    nn.init.trunc_normal_(m.encoder.cls, std=0.02)
+    nn.init.trunc_normal_(m.encoder.pos, std=0.02)
     return m

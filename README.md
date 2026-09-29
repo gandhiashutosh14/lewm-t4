@@ -46,27 +46,46 @@ exceeds it. Both runs fail episodes 17 and 31 (0-based positions in the evaluati
 released model fails too.
 
 **How independent the two runs are.** They differ in weight initialisation and in the random
-SIGReg projection directions. They share the data split, the batch order and, very likely, the
-dropout masks, because both read one data loader and both GPUs' generators were seeded the same
-way. Their agreement therefore understates how much independent runs would vary.
+SIGReg projection directions. They share the data split, the batch order and the dropout masks,
+because both read one data loader and `torch.manual_seed`, called once per model, reseeds every GPU,
+so both GPUs drew dropout from the second seed's stream. Their agreement therefore understates how
+much independent runs would vary.
 
 **Compute.** The released training config (`config/train/lewm.yaml` in the authors' repository)
 sets 100 epochs. This run had a 9-hour training budget inside Kaggle's 12-hour session and trained
 two models at once, which fit 3.6 epochs each. Sharing batches saved little: a step took about
 1.7 s with two models against about 0.9 s for one (0.88 s over steps 101-200 in the verification
 kernel's log, a different session with an earlier version of the loop; the 1.03 s/step in
-`kaggle-verify.json` also counts start-up and a validation pass), which suggests the two GPUs
-largely took turns rather than working in parallel. The cause was not profiled; the likely one is
-the fp16 gradient scaler, whose optimiser step reads its overflow check back to the CPU every step,
-so the loop waits for one GPU before it launches the other's work. One model alone would have fit
-about 7 epochs in the same budget.
+`kaggle-verify.json` also counts start-up and a validation pass): the two GPUs largely took turns
+rather than working in parallel. The cause is in the fp16 gradient scaler: `GradScaler.step` reads
+its overflow check back to the CPU every step, so the loop waited for one GPU to finish before it
+queued the other's work. The code now queues both GPUs' forward and backward passes before either
+optimiser step, so they can overlap (not yet timed on a T4); the run itself was made with the old
+loop. One model alone would have fit about 7 epochs in the same budget.
 
-**The learning-rate schedule.** The step budget is set from the measured step time, so the first
-300 steps ran on a provisional 100-epoch schedule at a learning rate below 6e-7 (about 1% of the
-peak); those steps still moved the model (training SIGReg fell from 51 to 20). The schedule was then
-fitted to 18,498 steps with a 924-step warm-up (the learning rate jumped to about 1.6e-5) and a full
-cosine decay to zero. This per-step schedule is this project's own: the released code steps its
-warm-up and cosine schedule once per epoch.
+**The learning-rate schedule.** The authors' training library, stable-pretraining (checked at
+version 0.1.8; their repository installs it through stable-worldmodel without pinning a version),
+uses manual optimisation and steps its `LinearWarmupCosineAnnealingLR` after every optimiser step
+(the `"interval": "epoch"` in their training script only reaches a Lightning scheduler dictionary
+that manual optimisation does not consult): a linear warm-up from 0 over
+the first 1% of the total steps, then a cosine decay to zero. The run reported here used this
+project's own variant, a warm-up over 5% of a total set from the measured step time. The first 300
+steps therefore ran on a provisional 100-epoch schedule at a learning rate below 6e-7 (about 1% of
+the peak); those steps still moved the model (training SIGReg fell from 51 to 20). The schedule was
+then fitted to 18,498 steps with a 924-step warm-up, so at step 300 the learning rate jumped about
+28-fold, to about 1.6e-5; the warm-up then continued to step 924, followed by a full cosine decay to
+zero. The code now warms up from 0 over an absolute 500 steps, and the fit at step 300 falls inside
+the warm-up and only sets where the cosine decay ends, so the learning rate no longer jumps.
+
+**Initialisation.** The from-scratch runs reported here started from an initialisation that
+differed from the authors'. The reference model uses Hugging Face's ViT initialisation inside the
+encoder only and keeps PyTorch's defaults for the projectors, the action embedder and the
+predictor; this project applied a truncated normal (std 0.02) with zero biases to every linear
+layer apart from the zero-initialised AdaLN gates, and a wider one (std 0.041, not 0.02) to the
+patch embedding. The action embedding was about 100 times smaller at initialisation than the
+reference's. The code now matches the reference initialisation
+([`tests/test_init.py`](tests/test_init.py) compares every parameter's spread with the reference
+model's); the reported numbers were not re-run.
 
 **A validation curve that looked wrong.** Validation prediction loss, computed in eval mode, swung
 between 2 and 42 through step 12,500 (two-thirds of training) while the training loss fell
@@ -78,6 +97,31 @@ mode, reached 80-294 while the training value (the logged batch at the same step
 while the learning rate was high was not tested. Only the final checkpoints were kept and planned
 with, by design, and by then the eval-mode loss had settled. The validation windows are a random 10%
 of overlapping windows from the same episodes, so they share frames with the training windows.
+
+**Changes since the reported runs.** The code has changed since the runs above, which were not
+re-run: the Kaggle numbers in this section come from the kernels at the commits named in
+[verify it yourself](#verify-it-yourself).
+
+- **Initialisation:** `init_like_reference` now reproduces the reference initialisation (Hugging
+  Face's ViT init in the encoder, PyTorch's defaults elsewhere), checked parameter by parameter.
+- **Learning-rate schedule:** an absolute 500-step warm-up from 0; the step-time fit falls inside it
+  and only sets the end of the cosine decay (capped at 100 epochs), so the learning rate no longer jumps.
+- **GPU overlap:** each step queues every model's forward and backward pass before any
+  `GradScaler.step`, so the two GPUs can work at the same time (not yet timed on a T4).
+- **Per-device seeding:** each GPU's generator is seeded with its own run's seed, so two runs no
+  longer share dropout masks.
+- **Adapter test:** the planning-cost test gives the adapter fresh inputs; before, it reused the
+  embeddings the reference model had cached in the same dictionary, so the adapter never encoded.
+- **Resumable checkpoints:** each checkpoint also writes `state.pt` (weights, optimiser, gradient
+  scaler, schedule, random number generators and position in the data) for
+  `TrainConfig(resume=True)`, which continues a run where it stopped (on the CPU, a resumed run ends
+  bit-identical to an uninterrupted one), and the official `config.json` next to
+  `last_official_layout.pt` for stable-worldmodel's loader.
+- **Smaller:** the 90/10 split uses fractions, as the authors' does (the reported runs had one more
+  validation window, 73,081 against 73,080); SIGReg runs in fp32 with autocast off (the reported
+  runs computed its matrix products in fp16); validation draws SIGReg's directions from a fixed
+  generator; an optional BatchNorm recalibration before validation and saving (off by default; the
+  authors do not do it).
 
 ## The task
 
@@ -119,7 +163,7 @@ the collapsed solution where every frame maps to the same point.
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[reference,dev]"
-pytest -q                        # 7 tests; downloads the official 72 MB checkpoint once
+pytest -q                        # 17 tests; downloads the official 72 MB checkpoint once
 python scripts/parity_report.py  # the measured differences
 ```
 
@@ -146,9 +190,16 @@ longer loads into a current `ViTModel`. Pin `transformers<5` as this repository 
 - Parity and retraining are shown for TwoRoom only. The other environments use the same
   architecture but were not run.
 - Training differs from the published setup in precision (fp16 on a T4, not bf16), length (3.6 of
-  the configured 100 epochs) and learning-rate schedule (a per-step warm-up and cosine decay fitted
-  to the time budget after 300 steps at a learning rate below 6e-7; the released code steps its
-  schedule once per epoch).
+  the configured 100 epochs) and learning-rate schedule. The authors' library steps a linear warm-up
+  from 0 over 1% of the total steps, then a cosine decay, after every optimiser step; the reported
+  run warmed up over 5% of a total fitted to the time budget at step 300, after 300 steps at a
+  learning rate below 6e-7, so the learning rate jumped about 28-fold at the fit. The code now uses
+  an absolute 500-step warm-up that the fit leaves unchanged.
+- The from-scratch runs started from an initialisation that differed from the authors': a truncated
+  normal (std 0.02) with zero biases in every linear layer and a wider patch-embedding init, where
+  the reference keeps PyTorch's defaults outside the ViT; the action embedding was about 100 times
+  smaller at initialisation. The code now matches the reference initialisation; the reported numbers
+  were not re-run.
 - 50 evaluation episodes and two training runs that share their data order: enough to show the
   reproduction works, not to rank it against the released model.
 - The benchmark plans between states from the training data (for every model compared); it does

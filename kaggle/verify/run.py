@@ -66,6 +66,7 @@ with open(f"{W}/tworoom.tar.zst", "rb") as fh, zstandard.ZstdDecompressor().stre
 os.remove(f"{W}/tworoom.tar.zst")
 h5_files = sorted(glob.glob(f"{W}/data/**/*.h5", recursive=True))
 stamp(f"dataset files: {h5_files}")
+assert len(h5_files) == 1, f"expected exactly one .h5 file in the dataset archive, found {h5_files}"
 H5 = h5_files[0]
 
 import h5py  # noqa: E402
@@ -123,7 +124,7 @@ from lewm_t4.train import TrainConfig, train  # noqa: E402
 del ref, mine
 torch.cuda.empty_cache()
 stamp("training throughput benchmark")
-bench = train(TrainConfig(dataset_path=H5, out_dir="/tmp/bench", max_steps=200, max_epochs=1, workers=4), log=print)
+bench = train(TrainConfig(dataset_path=H5, out_dir="/tmp/bench", max_steps=200), log=print)
 steps_hours = bench["hours"]
 results["train_benchmark"] = {"steps": bench["steps"], "hours": steps_hours, "sec_per_step": steps_hours * 3600 / bench["steps"],
                               "history": bench["history"], "gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9}

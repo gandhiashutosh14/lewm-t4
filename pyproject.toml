@@ -26,6 +26,9 @@ Homepage = "https://github.com/gandhiashutosh14/lewm-t4"
 [tool.setuptools.packages.find]
 include = ["lewm_t4*"]
 
+[tool.setuptools.package-data]
+lewm_t4 = ["official_config.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning", "ignore::FutureWarning"]

@@ -39,6 +39,14 @@ def test_sigreg_is_near_its_null_value_on_gaussians_and_large_on_collapse():
     assert 0.3 < s_iso < 2.0 and s_col > 50 * s_iso
 
 
+def test_sigreg_runs_in_fp32_under_autocast():
+    z = torch.randn(4, 256, 64, generator=torch.Generator().manual_seed(0)).bfloat16()
+    plain = sigreg(z, slices=128, generator=torch.Generator().manual_seed(1))
+    with torch.autocast("cpu", dtype=torch.bfloat16):              # matmuls would otherwise run in bf16
+        mixed = sigreg(z, slices=128, generator=torch.Generator().manual_seed(1))
+    assert torch.equal(plain, mixed)
+
+
 def test_converter_round_trips_a_state_dict():
     sd = LeWM().state_dict()
     back = from_official(to_official(sd))
@@ -100,14 +108,17 @@ def test_planning_cost_matches_the_official_model(pair):
     S = 16
     px = torch.rand(1, 2, 3, 224, 224) * 4 - 2
     cand = torch.randn(1, S, 5, 10)
-    info = {"pixels": px[:, None, :1].expand(1, S, 1, 3, 224, 224).clone(),
-            "goal": px[:, None, 1:2].expand(1, S, 1, 3, 224, 224).clone(), "action": cand[:, :, :1].clone()}
-    c_ref = ref.get_cost(info, cand.clone()).flatten()
+
+    def fresh():                                     # get_cost caches embeddings in the dict it is given
+        return {"pixels": px[:, None, :1].expand(1, S, 1, 3, 224, 224).clone(),
+                "goal": px[:, None, 1:2].expand(1, S, 1, 3, 224, 224).clone(), "action": cand[:, :, :1].clone()}
+
+    c_ref = ref.get_cost(fresh(), cand.clone()).flatten()
     emb0 = mine.encode(px[:, :1]).expand(S, 1, -1)
     c_me = mine.plan_cost(emb0, mine.encode(px[:, 1:2])[:, 0].expand(S, -1), cand[0])
     assert torch.allclose(c_ref, c_me, rtol=1e-5)
     from lewm_t4.adapter import swm_cost_model
-    info2 = {k: v.clone() for k, v in info.items()}
-    info2["action"] = cand[:, :, :1].clone()
-    c_adapter = swm_cost_model(mine).get_cost(info2, cand.clone()).flatten()
+    info = fresh()
+    c_adapter = swm_cost_model(mine).get_cost(info, cand.clone()).flatten()
     assert torch.allclose(c_ref, c_adapter, rtol=1e-5)
+    assert torch.equal(info["goal_emb"], mine.encode(px[:, 1:2]))   # the adapter encoded the goal itself

@@ -5,7 +5,9 @@ bills a T4 x2 session at twice wall-clock whether or not the second GPU works). 
 fitted to a 9-hour budget by steps, so training ends on schedule inside the 12-hour session. Each
 trained model then runs the official 50-episode TwoRoom planning evaluation.
 
-Outputs in /kaggle/working: s<seed>/{last.pt, last_official_layout.pt, history.json}, train.json.
+Outputs in /kaggle/working: s<seed>/{last.pt, last_official_layout.pt, config.json, state.pt, history.json},
+train.json. ``state.pt`` resumes the run (``TrainConfig(resume=True)``); ``config.json`` lets stable-worldmodel's
+``load_pretrained`` load ``last_official_layout.pt``.
 """
 import glob
 import json
@@ -60,13 +62,17 @@ with open(f"{W}/tworoom.tar.zst", "rb") as fh, zstandard.ZstdDecompressor().stre
     with tarfile.open(fileobj=reader, mode="r|") as tar:
         tar.extractall(f"{W}/data", filter="data")
 os.remove(f"{W}/tworoom.tar.zst")
-H5 = sorted(glob.glob(f"{W}/data/**/*.h5", recursive=True))[0]
+h5_files = glob.glob(f"{W}/data/**/*.h5", recursive=True)
+assert len(h5_files) == 1, f"expected exactly one .h5 file in the dataset archive, found {h5_files}"
+H5 = h5_files[0]
+results["dataset"] = {"file": os.path.basename(H5), "bytes": os.path.getsize(H5)}
+save()
 
 from lewm_t4.train import TrainConfig, train  # noqa: E402
 
 seeds = SEEDS[: len(names)]
 stamp(f"training seeds {seeds} on {len(seeds)} GPU(s) for {TRAIN_HOURS} h")
-res = train(TrainConfig(dataset_path=H5, out_dir=OUT, budget_hours=TRAIN_HOURS, workers=4), log=print,
+res = train(TrainConfig(dataset_path=H5, out_dir=OUT, budget_hours=TRAIN_HOURS), log=print,
             seeds=seeds, devices=[f"cuda:{i}" for i in range(len(seeds))])
 results["training"] = {k: v for k, v in res.items() if k != "history"}
 results["history"] = res["history"]
