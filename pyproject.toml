@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lewm-t4"
 version = "0.1.0a1"
-description = "LeWorldModel (JEPA world model with SIGReg) reimplemented from the paper in plain PyTorch, proven equal to the official model on its own weights, and retrained on a free Kaggle T4."
+description = "LeWorldModel (JEPA world model with SIGReg) reimplemented in plain PyTorch, matching the official model on its own weights, and retrained from scratch on free Kaggle T4s to the released model's planning success."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

@@ -1,4 +1,4 @@
-"""LeWorldModel, written from the paper (Maes et al., arXiv 2603.19312) as plain PyTorch.
+"""LeWorldModel (Maes et al., arXiv 2603.19312) as plain PyTorch, from the paper and the released MIT code.
 
 One file, no framework: a ViT-tiny encoder, a BatchNorm MLP projector, an action embedder, an
 autoregressive transformer predictor with AdaLN-zero conditioning on actions, a BatchNorm MLP on

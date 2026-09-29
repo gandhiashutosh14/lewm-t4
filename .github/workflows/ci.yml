@@ -27,6 +27,12 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -e ".[reference,dev]"
-      - run: ruff check lewm_t4 tests kaggle
+      - run: ruff check lewm_t4 tests kaggle scripts
       - name: Parity with the official checkpoint
         run: python -m pytest -q -rs
+      - name: Record the measured differences (printed here, kept as an artifact)
+        run: python scripts/parity_report.py --out parity-ci.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity-ci
+          path: parity-ci.json

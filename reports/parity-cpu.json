@@ -1,0 +1,13 @@
+{
+  "encoder_max_abs_diff": 0.0,
+  "encoder_bit_exact": true,
+  "action_encoder_max_abs_diff": 9.5367431640625e-07,
+  "predictor_max_abs_diff": 7.152557373046875e-07,
+  "predictor_output_mean_abs": 0.46546852588653564,
+  "plan_cost_max_rel_diff": 1.7076062874821218e-07,
+  "plan_cost_mean": 1649.8785400390625,
+  "torch": "2.14.0+cpu",
+  "transformers": "4.57.6",
+  "machine": "AMD64",
+  "processor": "AMD64 Family 25 Model 116 Stepping 1, AuthenticAMD"
+}
